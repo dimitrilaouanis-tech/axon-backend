@@ -55,7 +55,7 @@ def list_jobs():
     category = request.args.get('category')
 
     query = supabase.table('jobs') \
-        .select('*, profiles!jobs_user_id_fkey(first_name, last_name)') \
+        .select('*') \
         .eq('status', 'open') \
         .order('created_at', desc=True) \
         .range(offset, offset + limit - 1)
