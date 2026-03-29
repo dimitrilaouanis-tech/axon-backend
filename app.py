@@ -53,16 +53,20 @@ def list_jobs():
     limit = request.args.get('limit', 20, type=int)
     offset = request.args.get('offset', 0, type=int)
     category = request.args.get('category')
+    email = request.args.get('email')
+    status = request.args.get('status')
 
-    query = supabase.table('jobs') \
-        .select('*') \
-        .eq('status', 'open') \
-        .order('created_at', desc=True) \
-        .range(offset, offset + limit - 1)
+    query = supabase.table('jobs').select('*').order('created_at', desc=True)
+
+    if email:
+        query = query.eq('poster_email', email)
+    elif status != 'all':
+        query = query.eq('status', 'open')
 
     if category:
         query = query.eq('category', category)
 
+    query = query.range(offset, offset + limit - 1)
     response = query.execute()
     return jsonify(response.data)
 
@@ -117,9 +121,10 @@ def create_proposal(job_id):
 @app.route('/api/proposals', methods=['GET'])
 @require_auth
 def list_my_proposals():
+    user_id = request.args.get('user_id', request.user.get('sub'))
     response = supabase.table('proposals') \
         .select('*, jobs(title, status)') \
-        .eq('provider_id', request.user.get('sub')) \
+        .eq('provider_id', user_id) \
         .order('created_at', desc=True) \
         .execute()
     return jsonify(response.data)
@@ -168,6 +173,156 @@ def update_profile():
         .eq('id', request.user.get('sub')) \
         .execute()
     return jsonify(result.data[0])
+
+
+@app.route('/api/profile', methods=['GET'])
+def get_profile_by_query():
+    user_id = request.args.get('id')
+    if not user_id:
+        return jsonify({"error": "id required"}), 400
+    response = supabase.table('profiles').select('*').eq('id', user_id).execute()
+    if not response.data:
+        return jsonify({}), 200
+    return jsonify(response.data[0])
+
+
+@app.route('/api/profile', methods=['POST'])
+def create_profile():
+    data = request.json
+    existing = supabase.table('profiles').select('id').eq('id', data.get('id')).execute()
+    if existing.data:
+        return jsonify(existing.data[0]), 200
+    result = supabase.table('profiles').insert(data).execute()
+    return jsonify(result.data[0]), 201
+
+
+@app.route('/api/profile', methods=['PUT'])
+@require_auth
+def update_profile_v2():
+    data = request.json
+    user_id = data.pop('id', request.user.get('sub'))
+    result = supabase.table('profiles').update(data).eq('id', user_id).execute()
+    if not result.data:
+        return jsonify({"error": "Profile not found"}), 404
+    return jsonify(result.data[0])
+
+
+# ---------- PROVIDERS ----------
+
+@app.route('/api/providers', methods=['GET'])
+def list_providers():
+    response = supabase.table('provider_applications') \
+        .select('*') \
+        .eq('status', 'approved') \
+        .order('created_at', desc=True) \
+        .limit(20) \
+        .execute()
+    return jsonify(response.data)
+
+
+@app.route('/api/providers', methods=['POST'])
+def apply_provider_public():
+    data = request.json
+    required = ['full_name', 'email', 'specialty']
+    missing = [f for f in required if not data.get(f)]
+    if missing:
+        return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+    application = {
+        'full_name': data['full_name'],
+        'email': data['email'],
+        'specialty': data['specialty'],
+        'tools': data.get('tools'),
+        'starting_rate': data.get('starting_rate'),
+        'portfolio': data.get('portfolio'),
+        'status': 'pending'
+    }
+    result = supabase.table('provider_applications').insert(application).execute()
+    return jsonify(result.data[0]), 201
+
+
+# ---------- MESSAGES ----------
+
+@app.route('/api/messages', methods=['GET'])
+@require_auth
+def get_messages():
+    conversation = request.args.get('conversation')
+    user_id = request.args.get('user')
+    if conversation:
+        response = supabase.table('messages') \
+            .select('*') \
+            .eq('conversation_id', conversation) \
+            .order('created_at', desc=False) \
+            .execute()
+    else:
+        response = supabase.table('messages') \
+            .select('*') \
+            .or_(f'sender_id.eq.{user_id},receiver_id.eq.{user_id}') \
+            .order('created_at', desc=True) \
+            .limit(50) \
+            .execute()
+    return jsonify(response.data)
+
+
+@app.route('/api/messages', methods=['POST'])
+@require_auth
+def send_message():
+    data = request.json
+    message = {
+        'conversation_id': data['conversation_id'],
+        'sender_id': data['sender_id'],
+        'receiver_id': data['receiver_id'],
+        'content': data['content']
+    }
+    result = supabase.table('messages').insert(message).execute()
+    return jsonify(result.data[0]), 201
+
+
+# ---------- NOTIFICATIONS ----------
+
+@app.route('/api/notifications', methods=['GET'])
+@require_auth
+def get_notifications():
+    user_id = request.args.get('user_id')
+    response = supabase.table('notifications') \
+        .select('*') \
+        .eq('user_id', user_id) \
+        .order('created_at', desc=True) \
+        .limit(30) \
+        .execute()
+    return jsonify(response.data)
+
+
+@app.route('/api/notifications', methods=['POST'])
+@require_auth
+def create_notification():
+    data = request.json
+    notif = {
+        'user_id': data['user_id'],
+        'type': data.get('type', 'info'),
+        'title': data['title'],
+        'body': data.get('body', ''),
+        'from_user_id': data.get('from_user_id'),
+        'read': False
+    }
+    result = supabase.table('notifications').insert(notif).execute()
+    return jsonify(result.data[0]), 201
+
+
+@app.route('/api/notifications', methods=['PUT'])
+@require_auth
+def mark_notification_read():
+    data = request.json
+    if data.get('all'):
+        supabase.table('notifications') \
+            .update({'read': True}) \
+            .eq('user_id', data['user_id']) \
+            .execute()
+    else:
+        supabase.table('notifications') \
+            .update({'read': True}) \
+            .eq('id', data['id']) \
+            .execute()
+    return jsonify({"ok": True})
 
 
 # ---------- CLIENT JOB MANAGEMENT ----------
