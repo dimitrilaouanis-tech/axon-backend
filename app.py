@@ -201,9 +201,8 @@ def create_profile():
 def update_profile_v2():
     data = request.json
     user_id = data.pop('id', request.user.get('sub'))
-    result = supabase.table('profiles').update(data).eq('id', user_id).execute()
-    if not result.data:
-        return jsonify({"error": "Profile not found"}), 404
+    data['id'] = user_id
+    result = supabase.table('profiles').upsert(data).execute()
     return jsonify(result.data[0])
 
 
